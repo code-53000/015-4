@@ -8,6 +8,7 @@ import {
   mmToCt,
   formatNumber,
 } from "@/utils/sizeCalculator";
+import { bakePlacedPatterns } from "@/lib/patternUtils";
 
 export default function SizePanel() {
   const cols = useCanvasStore((s) => s.cols);
@@ -15,6 +16,7 @@ export default function SizePanel() {
   const mmPerCell = useCanvasStore((s) => s.mmPerCell);
   const setMmPerCell = useCanvasStore((s) => s.setMmPerCell);
   const cells = useCanvasStore((s) => s.cells);
+  const placedPatterns = useCanvasStore((s) => s.placedPatterns);
   const colors = useColorStore((s) => s.colors);
 
   const size = useMemo(
@@ -24,11 +26,12 @@ export default function SizePanel() {
   const matchedCt = useMemo(() => mmToCt(mmPerCell), [mmPerCell]);
 
   const stats = useMemo(() => {
+    const merged = bakePlacedPatterns(cells, cols, rows, placedPatterns);
     const usage = new Map<string, number>();
     let filled = 0;
-    for (let r = 0; r < cells.length; r++) {
-      for (let c = 0; c < cells[r].length; c++) {
-        const v = cells[r][c];
+    for (let r = 0; r < merged.length; r++) {
+      for (let c = 0; c < merged[r].length; c++) {
+        const v = merged[r][c];
         if (v) {
           filled++;
           usage.set(v, (usage.get(v) ?? 0) + 1);
@@ -42,7 +45,7 @@ export default function SizePanel() {
       uniqueColors: usage.size,
       usage,
     };
-  }, [cells, cols, rows]);
+  }, [cells, placedPatterns, cols, rows]);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">

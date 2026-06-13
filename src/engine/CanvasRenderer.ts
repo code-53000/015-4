@@ -1,4 +1,5 @@
-import type { CanvasViewport, CellGrid, ColorEntry } from "@/types";
+import type { CanvasViewport, CellGrid, ColorEntry, PlacedPattern } from "@/types";
+import { getTransformedCells, gridSize } from "@/lib/patternUtils";
 
 export interface RenderOptions {
   viewport: CanvasViewport;
@@ -8,8 +9,15 @@ export interface RenderOptions {
   colorMap: Map<string, ColorEntry>;
   hoveredCell: { col: number; row: number } | null;
   showStitchMark: boolean;
+  placedPatterns?: PlacedPattern[];
+  selectedPatternId?: string | null;
   highlightEmpty?: boolean;
 }
+
+export type HitResult =
+  | { type: "none" }
+  | { type: "pattern"; id: string }
+  | { type: "handle"; id: string; corner: "tl" | "tr" | "bl" | "br" | "rotate" };
 
 export class CanvasRenderer {
   private ctx: CanvasRenderingContext2D;
@@ -45,8 +53,65 @@ export class CanvasRenderer {
     };
   }
 
+  hitTest(sx: number, sy: number, vp: CanvasViewport, patterns: PlacedPattern[], selectedId: string | null): HitResult {
+    if (selectedId) {
+      const selected = patterns.find((p) => p.id === selectedId);
+      if (selected) {
+        const transformed = getTransformedCells(selected);
+        const { cols: pcols, rows: prows } = gridSize(transformed);
+        const g = this.gridToScreen(selected.col, selected.row, vp);
+        const w = pcols * vp.scale;
+        const h = prows * vp.scale;
+        const handleSize = Math.max(10, vp.scale * 0.8);
+
+        const rotateCx = g.x + w / 2;
+        const rotateCy = g.y - handleSize - 6;
+        const dist = Math.hypot(sx - rotateCx, sy - rotateCy);
+        if (dist <= handleSize / 2 + 2) {
+          return { type: "handle", id: selectedId, corner: "rotate" };
+        }
+
+        const corners: { key: "tl" | "tr" | "bl" | "br"; x: number; y: number }[] = [
+          { key: "tl", x: g.x, y: g.y },
+          { key: "tr", x: g.x + w, y: g.y },
+          { key: "bl", x: g.x, y: g.y + h },
+          { key: "br", x: g.x + w, y: g.y + h },
+        ];
+        for (const c of corners) {
+          if (
+            sx >= c.x - handleSize / 2 - 2 &&
+            sx <= c.x + handleSize / 2 + 2 &&
+            sy >= c.y - handleSize / 2 - 2 &&
+            sy <= c.y + handleSize / 2 + 2
+          ) {
+            return { type: "handle", id: selectedId, corner: c.key };
+          }
+        }
+      }
+    }
+
+    for (let i = patterns.length - 1; i >= 0; i--) {
+      const pp = patterns[i];
+      const transformed = getTransformedCells(pp);
+      const { cols: pcols, rows: prows } = gridSize(transformed);
+      if (
+        sx >= pp.col * vp.scale + vp.offsetX &&
+        sx < (pp.col + pcols) * vp.scale + vp.offsetX &&
+        sy >= pp.row * vp.scale + vp.offsetY &&
+        sy < (pp.row + prows) * vp.scale + vp.offsetY
+      ) {
+        const localCol = Math.floor((sx - vp.offsetX) / vp.scale) - pp.col;
+        const localRow = Math.floor((sy - vp.offsetY) / vp.scale) - pp.row;
+        if (transformed[localRow]?.[localCol] !== null && transformed[localRow]?.[localCol] !== undefined) {
+          return { type: "pattern", id: pp.id };
+        }
+      }
+    }
+    return { type: "none" };
+  }
+
   render(opts: RenderOptions) {
-    const { viewport: vp, cols, rows, cells, colorMap, hoveredCell, showStitchMark } = opts;
+    const { viewport: vp, cols, rows, cells, colorMap, hoveredCell, showStitchMark, placedPatterns = [], selectedPatternId = null } = opts;
     const ctx = this.ctx;
     const cssW = this.canvas.width / this.dpr;
     const cssH = this.canvas.height / this.dpr;
@@ -79,6 +144,10 @@ export class CanvasRenderer {
       }
     }
 
+    for (const pp of placedPatterns) {
+      this.drawPlacedPattern(pp, vp, colorMap, showStitchMark, pp.id === selectedPatternId);
+    }
+
     if (hoveredCell) {
       const { col, row } = hoveredCell;
       if (col >= 0 && col < cols && row >= 0 && row < rows) {
@@ -95,6 +164,93 @@ export class CanvasRenderer {
     ctx.restore();
 
     this.drawGridBorder(gridLeft, gridTop, gridW, gridH);
+
+    if (selectedPatternId) {
+      const selected = placedPatterns.find((p) => p.id === selectedPatternId);
+      if (selected) {
+        this.drawSelectionHandles(selected, vp);
+      }
+    }
+  }
+
+  private drawPlacedPattern(
+    pp: PlacedPattern,
+    vp: CanvasViewport,
+    colorMap: Map<string, ColorEntry>,
+    showStitchMark: boolean,
+    selected: boolean
+  ) {
+    const transformed = getTransformedCells(pp);
+    const { cols: pcols, rows: prows } = gridSize(transformed);
+    for (let r = 0; r < prows; r++) {
+      for (let c = 0; c < pcols; c++) {
+        const cid = transformed[r][c];
+        if (!cid) continue;
+        const color = colorMap.get(cid);
+        if (!color) continue;
+        this.drawCell(pp.col + c, pp.row + r, vp, color.hexColor, showStitchMark);
+      }
+    }
+    if (selected) {
+      const ctx = this.ctx;
+      const g = this.gridToScreen(pp.col, pp.row, vp);
+      const w = pcols * vp.scale;
+      const h = prows * vp.scale;
+      ctx.save();
+      ctx.strokeStyle = "#C25B56";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(g.x - 2, g.y - 2, w + 4, h + 4);
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+
+  private drawSelectionHandles(pp: PlacedPattern, vp: CanvasViewport) {
+    const ctx = this.ctx;
+    const transformed = getTransformedCells(pp);
+    const { cols: pcols, rows: prows } = gridSize(transformed);
+    const g = this.gridToScreen(pp.col, pp.row, vp);
+    const w = pcols * vp.scale;
+    const h = prows * vp.scale;
+    const handleSize = Math.max(10, vp.scale * 0.8);
+
+    const corners: { x: number; y: number }[] = [
+      { x: g.x, y: g.y },
+      { x: g.x + w, y: g.y },
+      { x: g.x, y: g.y + h },
+      { x: g.x + w, y: g.y + h },
+    ];
+    for (const c of corners) {
+      ctx.save();
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "#C25B56";
+      ctx.lineWidth = 2;
+      ctx.fillRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+      ctx.strokeRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
+      ctx.restore();
+    }
+
+    const rotateCx = g.x + w / 2;
+    const rotateCy = g.y - handleSize - 6;
+    ctx.save();
+    ctx.strokeStyle = "#C25B56";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(g.x + w / 2, g.y);
+    ctx.lineTo(rotateCx, rotateCy + handleSize / 2);
+    ctx.stroke();
+    ctx.fillStyle = "#FFFFFF";
+    ctx.beginPath();
+    ctx.arc(rotateCx, rotateCy, handleSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#C25B56";
+    ctx.font = `${Math.max(10, handleSize * 0.6)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("↻", rotateCx, rotateCy);
+    ctx.restore();
   }
 
   private drawLinenBackground(w: number, h: number) {

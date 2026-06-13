@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Palette, Ruler, FolderOpen } from "lucide-react";
+import { Palette, Ruler, FolderOpen, Sparkles } from "lucide-react";
 import clsx from "clsx";
 
 import StitchCanvas from "@/components/StitchCanvas";
@@ -7,6 +7,7 @@ import Toolbar from "@/components/Toolbar";
 import ColorPalettePanel from "@/components/ColorPalettePanel";
 import SizePanel from "@/components/SizePanel";
 import SchemePanel from "@/components/SchemePanel";
+import PatternLibraryPanel from "@/components/PatternLibraryPanel";
 import StatusBar from "@/components/StatusBar";
 import GridResizeDialog from "@/components/GridResizeDialog";
 import SaveSchemeDialog from "@/components/SaveSchemeDialog";
@@ -15,10 +16,12 @@ import { useColorStore } from "@/store/colorStore";
 import { useCanvasStore } from "@/store/canvasStore";
 import { useSchemeStore } from "@/store/schemeStore";
 import { CanvasRenderer } from "@/engine/CanvasRenderer";
+import { bakePlacedPatterns } from "@/lib/patternUtils";
 
-type TabKey = "colors" | "size" | "schemes";
+type TabKey = "patterns" | "colors" | "size" | "schemes";
 
 const TABS: { key: TabKey; label: string; icon: typeof Palette }[] = [
+  { key: "patterns", label: "图案库", icon: Sparkles },
   { key: "colors", label: "色号表", icon: Palette },
   { key: "size", label: "尺寸", icon: Ruler },
   { key: "schemes", label: "方案", icon: FolderOpen },
@@ -34,6 +37,8 @@ export default function Home() {
   const rows = useCanvasStore((s) => s.rows);
   const mmPerCell = useCanvasStore((s) => s.mmPerCell);
   const cells = useCanvasStore((s) => s.cells);
+  const placedPatterns = useCanvasStore((s) => s.placedPatterns);
+  const bakeAllPatterns = useCanvasStore((s) => s.bakeAllPatterns);
   const currentSchemeId = useCanvasStore((s) => s.currentSchemeId);
   const currentSchemeName = useCanvasStore((s) => s.currentSchemeName);
   const setSchemeMeta = useCanvasStore((s) => s.setSchemeMeta);
@@ -44,7 +49,7 @@ export default function Home() {
 
   const saveCurrent = useSchemeStore((s) => s.saveCurrent);
 
-  const [activeTab, setActiveTab] = useState<TabKey>("colors");
+  const [activeTab, setActiveTab] = useState<TabKey>("patterns");
   const [showResize, setShowResize] = useState(false);
   const [showSave, setShowSave] = useState(false);
   const [thumbnail, setThumbnail] = useState<string>("");
@@ -56,9 +61,10 @@ export default function Home() {
       const off = document.createElement("canvas");
       const r = new CanvasRenderer(off);
       const colorMap = new Map(colors.map((c) => [c.id, c]));
-      return r.generateThumbnail(cells, cols, rows, colorMap, 160);
+      const merged = bakePlacedPatterns(cells, cols, rows, placedPatterns);
+      return r.generateThumbnail(merged, cols, rows, colorMap, 160);
     },
-    [cols, rows, cells, colors]
+    [cols, rows, cells, colors, placedPatterns]
   );
 
   const openSave = () => {
@@ -67,6 +73,7 @@ export default function Home() {
   };
 
   const handleSave = async (name: string, saveAsCopy: boolean) => {
+    const merged = bakePlacedPatterns(cells, cols, rows, placedPatterns);
     const th = thumbnail || generateThumbnail();
     const existingId = saveAsCopy ? null : currentSchemeId;
     const id = await saveCurrent(name, {
@@ -74,17 +81,22 @@ export default function Home() {
       cols,
       rows,
       mmPerCell,
-      cellsJson: JSON.stringify(cells),
+      cellsJson: JSON.stringify(merged),
       colorsJson: JSON.stringify(colors),
       existingId,
     });
+    if (placedPatterns.length > 0) {
+      bakeAllPatterns();
+    }
     setSchemeMeta(id, name);
     setShowSave(false);
   };
 
   const handleNewBlank = () => {
+    const hasCells = cells.some((r) => r.some((v) => v !== null));
+    const hasPatterns = placedPatterns.length > 0;
     if (
-      cells.some((r) => r.some((v) => v !== null)) &&
+      (hasCells || hasPatterns) &&
       !confirm("当前画布有内容，确认新建空白方案将清空内容？")
     ) {
       return;
@@ -125,6 +137,7 @@ export default function Home() {
           </div>
 
           <div className="flex-1 overflow-hidden min-h-0 relative">
+            {activeTab === "patterns" && <PatternLibraryPanel />}
             {activeTab === "colors" && <ColorPalettePanel />}
             {activeTab === "size" && <SizePanel />}
             {activeTab === "schemes" && (
